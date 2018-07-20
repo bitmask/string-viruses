@@ -1,0 +1,68 @@
+
+# get host-pathogen pairs from genbank entries
+
+on blue
+
+for i in `seq 1 134`; do 
+wget -O $i.list https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi\?db=protein\&term=host\&retmax=99999\&RetStart=$(($i*100000))
+; done
+
+
+for i in `seq 1 134`; do
+    cat $i.list | grep "<Id>" | perl -e '@str; while (<>) { $_ =~ />([0-9]+)</; push @acc, $1; if (scalar @acc >= 100) {print join ",", @acc; print "\n"; @acc =()}} print join ",", @acc; print "\n";' > $i.urls
+    acc=1
+    for j in `cat $i.urls`; do
+        wget -O $i.$acc.gp https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi\?WebEnv=1\&db=protein\&retmode=summary\&id=$j\&rettype=gp
+        acc=$(($acc + 1))
+    ; done
+; done
+
+
+
+# this is pretty slow, would do with post next time.
+
+# on blue parse out just the host= and organism= lines
+cat gp/*.gp | ./parse.pl|sort|uniq > host-pathogen
+
+# filter out any pairs that are above species level
+
+# Then climb the tax tree to get the phyla/whatever for the organisms
+
+export PYTHONPATH=../ncbi_taxonomy
+python domain_for_taxid.py host_pathogen_allsources > host_pathogen_allsources_domains
+
+cat host_pathogen_allsources| tab 1 | sort | uniq > hosts
+cat host_pathogen_allsources| tab 2 | sort | uniq > pathogens
+
+for i in hosts pathogens; do python name_for_taxid.py $i > $i.names; done
+
+# climb the tax tree to species level for both for the hosts and pathogens
+cat host_pathogen_trimmed|tab 1 > hpt1
+cat host_pathogen_trimmed|tab 2 > hpt2
+python climb_tax_tree_to.py ../pathogen-host/hpt1 > ../pathogen-host/hpt1_species
+python climb_tax_tree_to.py ../pathogen-host/hpt2 > ../pathogen-host/hpt2_species
+
+# generate string_v11_species from the string fasta files by taking all unique taxids from the fasta identifiers
+zcat proteins.fa.gz | grep ">" | perl -nale '$_ =~ />(.*?)\..*/; print $1;' | sort | uniq > ~/string_v11_species
+# then climb the tax tree to convert these to species
+python climb_tax_tree_to.py ../pathogen-host/string_v11_species > ../pathogen-host/string_v11_species_tospecies
+
+# read this output in R and then write out the trimmed host_pathogen_trimmed which does all the filtering and species jiggling
+
+
+
+
+# then run text mining
+
+
+get just the interactions to look at in cytoscape from tm results
+cat textmining_interact.tsv|grep -w 9606|grep -w 5855 > vivax
+edit this to be bidirectional and only links > 0.15
+create network in cytoscape from vivax
+cat vivax|tab 2|sort|uniq > vivax.human
+cat vivax|tab 1|sort|uniq > vivax.path
+create network from each of these, then merge all 3 networks
+
+look at orthologs
+join -1 1 -2 1 <(sort sc) ../../../eggNOG/LUCA/euNOG.list > sc.o
+join -1 2 -2 1 <(sort -k 2 sc.o) ../../../eggNOG/LUCA/euNOG.list > sc.oo

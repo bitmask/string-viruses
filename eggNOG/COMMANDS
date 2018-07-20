@@ -1,0 +1,97 @@
+
+
+# read data/uniprot_to_payload/README for whole pipeline instructions
+
+
+# generate annotations
+#
+#
+
+# after Jaime did generation of trees etc at his end, download this from site
+#
+# then map his ENOG id to my MOG id with
+
+cat *.nog|grep -v "#"|perl -nale '@line = split "\t"; @prot = split ",", $line[4]; foreach $p (@prot) {print $line[1] . "\t" . $p;}' | sort -b -k 2 > Manifest
+
+# create a lookup table
+cat ../../clades-indiv-proteomes/10239.out.eggnog.final.eggnog|grep -v "#" | sort -b -k 2 > m
+join -o 0,1.1,2.1 -1 2 -2 2 Manifest m  > Mapping
+rm m
+
+
+# get the trees for the NOGs that span multiple top level classificationts
+
+for i in `cat ../../clades-indiv-proteomes/10239.out.eggnog.final.depth |grep -w 1|tab 1`; do grep $i Mapping; done |awk '{print $2}'|sort|uniq  > multiple
+
+for i in `cat multiple`; do grep $i Viruses.trees.tsv |tab 5 > $i.nog; done
+
+
+# add the tax levels to the string
+
+cat ../../clades-indiv-proteomes/10239.out.eggnog.final.details|sort -b -k 3|awk -F"\t" '{print "s/" $3 "/" $7 "_" $3 "/g"}'|sed s:\ :_:g|sed s:,::g > ids
+
+for i in *.nog; do sed -f ids < $i > $i.tree; done
+
+
+
+# look at a specific nog domains
+#
+grep `grep ENOG411EPIZ Mapping|awk '{print $3}'|uniq` ../../clades-indiv-proteomes/10239.out.eggnog.final.details|tab 4
+
+
+of the 15 NOGs that span top level classifications:
+
+
+Too small to determine parsimony
+
+ENOG411EP5A  2  envelope/putative
+ENOG411EPNU  3  structural/capsid/uncharacterized
+
+Non parsimonious with tax tree
+
+ENOG411EP7F pos stranded ssRNA coat protein <- also found in dsRNA, ssDNA
+ENOG411EP64 P-loop containing nucleoside triphosphate hydrolase superfamily, many unknown <- few ssDNA, but not parsim. at order level
+ENOG411EPJ4 RdRp and other -- names are weird in .out.eggnog.final.details but absent in .out.details TODO
+ENOG411EPKV many non structural / helicase / Thymidine kinase  -> P-loop containing nucleoside triphosphate hydrolase superfamily
+ENOG411EPQZ P-loop containing nucleoside triphosphate hydrolase superfamily
+
+Large enough and can be parsimonious if rooted 
+
+ENOG411EPIZ PD-(D/E)XK nuclease superfamily -- influenza and herpesviruses
+ENOG411EPME AAA-domain  /  P-loop containing nucleoside triphosphate hydrolase superfamily
+ENOG411EPK7 RdRp
+ENOG411EPFD Peptidase clan CA
+ENOG411ENY1 FAD/NAD(P)-binding Rossmann fold Superfamily
+ENOG411EPIK 11  30 kDa viral movement proteins superfamily
+ENOG411EPNP  5  Actin-like ATPase Superfamily
+ENOG411ENX1  8  Ring-finger/U-box superfamily
+
+
+
+
+# hmm press the LUCA NOGs
+
+# hmmscan the pressed NOGS with the sequences from the viral NOGs; and don't write a million tmp files
+for mog in `cat ../viral_proteomes/10239/manifest`; do for db in *.hmm; echo $mog; wc -l $mog; date; do hmmscan --cpu 4 --notextw --tblout ../viral_proteomes/10239/scan_output/$mog.$db.scan $db ../viral_proteomes/10239/$mog > /dev/null; cat ../viral_proteomes/10239/scan_output/$mog.$db.scan |grep -v "#" >> ../viral_proteomes/10239/$mog.scan; rm ../viral_proteomes/10239/scan_output/$mog.$db.scan; date; done; done
+
+# are all the hits in one MOG in the same LUCA nog?
+
+for i in *.fa.scan; do max=$(wc -l $i|awk '{print $1}'); uniq=$(cat $i | awk '{print $1}' | sort|uniq|wc -l); if [[ $uniq < $max ]] ; then echo $i $uniq "uniq of" $max "total"; else echo $i $uniq "uniq of" $max "total NOMATCH"; fi; done > scan.summary
+
+
+# BETTER
+#
+# hhmake the viral NOGS
+for i in *.fa; do hhmake -M 50 -cons -i $i; done
+
+# convert hmmer to hh format
+for i in *.hmm; do hhmake -i $i; done
+# concatenate together to make a database
+for i in *.hhm; do cat $i >> db.hhm; done
+
+
+# then compare each of the viral nogs to the database
+for i in ../viral_proteomes/10239/algs/*.hhm; do if [[ ! -e $i.match ]]; then hhsearch -cpu 4 -i $i -d db.hhm -o $i.match; fi; done
+
+
+

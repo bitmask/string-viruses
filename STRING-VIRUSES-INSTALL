@@ -1,0 +1,606 @@
+= STRING data creation for viruses
+
+This document should cover all the steps necessary to create and import data to viruses.STRING.
+
+== Overview of servers
+
+These commands have been run in several locations
+
+* computerome.cbs.dtu.dk -- danish supercomputer, used for text mining
+* blue.jensenlab.org -- Lars' server, hosts database and viruses.STRING website.  used for running string doall script to generate files to import to database
+* imlslnx-sagittarius.uzh.ch -- gateway server in Zurich, run stuff on atlas instead
+* imlslnx-atlas.uzh.ch -- for heavy lifting in Zurich
+
+The following servers were used, but are no longer running.  All their functionality has been moved to one of the above locations
+* stitch.jensenlab.org -- Lars' server
+* red.jensenlab.org -- Lars' server
+
+Analysis in R and generation of plots, can be done on a laptop
+
+
+== Overview of whole build process
+
+0. Choose viruses to be included
+1. Create string database and import items
+2. Build orthology groups for viruses
+3. Get and benchmark evidence from 
+    experiments
+    textmining
+		nlp
+    transfer
+	(other channels are not used for viruses)
+4. Import all evidence to database
+5. Profit... er, publish
+
+The following sections go into detail on each of these steps, except the last.
+
+
+
+
+
+
+== Virus selection
+
+Viruses are selected from complete proteomes in Uniprot.  
+
+
+=== Download proteomes
+
+Run this on computerome, files are big.
+
+Use the web interface to search Uniprot for taxonomy:10239 (viruses) and reference proteomes to get the list of proteomes to use
+and then the list of proteins for each proteome.
+
+ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/Viruses/
+
+some error checking on the number of proteomes and the number of proteins per proteome follows:
+
+for i in *.idmapping.entry_name; do 
+    for j in `cat $i`; do 
+        if grep $j reviewed_proteome_manifest; 
+        then echo $i $j >> found; 
+        else echo $i $j >> notfound; 
+fi; done; done
+
+# how many proteins are missing from the species i have already?
+cat found|awk '{print $1}' |sort|uniq > found_proteomes
+grep -f found_proteomes notfound |wc -l
+
+# from how many genomes
+grep -f found_proteomes notfound |awk '{print $1}'|sort|uniq -c|sort -k 2 > missing_proteins
+
+# total number of proteins in the proteomes that were found
+cat found|awk '{print $1}'|sort|uniq -c |sort -k 2 > found_proteins_by_proteome
+
+# put those together
+join -1 2 -2 2 found_proteins_by_proteome missing_proteins | sort -nk 3 > proteomes_found_missing_proteincounts
+
+# unreviewed proteins missing from proteomes
+cat proteomes_found_missing_proteincounts |awk '{c+=$2}END{print c}'
+
+
+
+
+
+=== Get other dependencies and process proteomes
+
+uniprot_to_payload has the following directory structure
+.
+|-- uniprot_to_payload    
+|   |-- data_in
+|   |   `-- proteomes
+|   `-- data_out
+|       `-- fastafiles
+`-- taxonomy
+
+Inputs
+
+data_in/proteomes-all.tab
+data_in/proteomes.entryids
+../taxonomy/names.dmp (from NCBI tax ftp)
+../taxonomy/nodes.dmp (from NCBI tax ftp)
+
+Outputs
+
+data_out/fastafiles                 -- all fastafiles associated with each virus
+data_out/pfam                       -- domains for each protein
+data_out/goterms                    -- goterms for each protein
+data_out/functions                  -- functions for each protein, used for naming generated eggnog OGs
+data_out/pdb                        -- structure names for each protein, if available
+data_out/uniprot                    -- link to the uniprot entry_name for each protein (polyproteins are the only hard case here)
+data_out/hosts                      -- file with two columns, virus \t host
+data_out/string_v11.species.tsv     -- list of species and abbreviations needed for STRING
+data_out/synonyms                   -- used for textmining
+out_best_synonyms_file              -- used for protein name to display on website
+
+
+Running
+
+the uniprot_to_payload code is run on computerome in ~hecook/projects/uniprot_to_payload/ as:
+
+python select_isolates.py
+
+
+The code will cleave polyproteins into the correct pieces (it tries to pick the shortest non-overlapping chains when this is ambiguous)
+And will remove genomes that are too small (less than 2 proteins after cleaving polyproteins)
+Checks for duplicate proteins and removes them (though it retains all synonyms from both duplicates)
+Generates the fastafiles for input to SIMAP and for the sequences for STRING
+Generates the synonym files for proteins for the textmining
+
+
+
+== eggNOG, Orthology groups for viruses
+
+As soon as the proteomes and proteins are frozen for STRING, submit them to SIMAP (Thomas Rattei) for all vs all blasting
+This was done for versions of EggNOG <= 5, but for future versions, this will likely be built with a different system, so we might not need to do this for viruses again
+
+The first steps of the eggNOG pipeline are to populate the items tables in the STRING database
+
+=== Populate database -- items and homology schemas
+(the items tables may not strictly be necessary to run the eggnog pipeline, but they will be needed later)
+((however, before importing to the db, the protein_id of the viruses should be set to something larger than all of the string protein_ids -- this makes selecting only the viruses from the database much easier and faster))
+
+Run this on blue, needs access to db.
+
+This follows string doall.sh 
+These scripts rely on setting some env variables
+
+export FREEZE_DIR=/home/helen/freeze_11
+export DERIVED_DIR=/home/helen/derived_11
+export OUTPUT_DIR=/home/helen/derived_11
+export STRING_FRONTEND_DATABASE_VERSION=11
+export STRING_FRONTEND_DATABASE_NAME=string_11
+export STRING_FRONTEND_DATABASE_HOST=localhost
+export STRING_FRONTEND_DATABASE_PORT=5432
+export STRING_FRONTEND_DATABASE_USER=helen
+export DATABASE_NAME=string_11
+export DATABASE_HOST=localhost
+export DATABASE_PORT=5432
+export DATABASE_USER=helen
+
+on blue ~/derived_11/
+
+
+../maintenance/make_species_name_file_and_check_protein_counts.pl > species.names.raw.txt
+mv species.names.raw.txt species.names.txt
+cat species.names.txt | ../maintenance/make_species_lookup_file.pl > species.lookup
+cat species.lookup | ../maintenance/make_protein_shorthands.pl > protein.shorthands.txt
+../maintenance/get_protein_sizes.pl > protein_sizes.txt
+../maintenance/make_species_and_clades_file.pl > species_and_clades.txt
+../maintenance/get_crc64_checksum_entries.pl > proteins.checksums.txt
+cat species.names.txt | ../maintenance/assign_taxonomic_domain_to_species.pl > species.taxonomic_domain.txt
+
+
+../maintenance/generate_homology_table_data.pl homologs.gz # outputs homologs.gz.parsed_unsorted.tsv
+sort -k 1g -k 2g homologs.gz.parsed_unsorted.tsv | uniq > all.sorted.tsv
+
+cat all.sorted.tsv | ../maintenance/create_best_hit_matrix.pl > fill.best_hit_per_species.table.sql
+
+mkdir output
+mkdir aliases_and_descriptions
+# pretend to have some files
+touch COGS.txt
+touch NOGS.txt
+touch final_orthgroups.txt
+touch aliases_and_descriptions/alias_best.tsv
+touch aliases_and_descriptions/alias_all.tsv
+touch aliases_and_descriptions/text_all.tsv
+touch aliases_and_descriptions/text_best.tsv
+touch gene_position.tsv
+touch runs.genes.txt
+
+../maintenance/parse_primary_data.pl > populate_items_schema_1.sql
+../maintenance/parse_protein_sequences_from_fasta_files.pl > populate_items_schema_2.sql
+
+# copy the db schema from the old db
+pg_dump -s -n items string_10_5 > tables.items
+pg_dump -s -n homology string_10_5 > tables.homology
+psql -d string_11 < tables.items
+psql -d string_11 < tables.homology
+
+psql -d string_11 < populate_items_schema_1.sql
+psql -d string_11 < populate_items_schema_2.sql
+psql -d string_11 < fill.best_hit_per_species.table.sql
+psql -d string_11 < <( cat <(echo "Copy homology.similarity_data from stdin; " ) all.sorted.tsv)
+
+
+
+
+
+
+=== EggNOG pipeline
+
+
+Running
+on computerome ~hecook/projects/eggNOG-pipeline
+second version of eggnog in eggnog-pipeline_5
+
+refer to the do_all_local.sh file there 
+
+
+copy some files in derived to DATA: species.names.txt species_and_clades.txt proteins.checksums.txt protein_sizes.txt species.taxonomic_domain.txt protein.shorthands.txt clades_and_names.txt species.lookup 
+make sure that in species.taxonomic_domain.txt col 2 is viruses
+
+copy fastafiles from uniprot_to_payload to DATA
+
+copy ncbi tax from freeze to DATA
+
+touch cogs+kogs.tsv
+cat data_out/pogs |uniq|awk '{print $2 "\t" $3 "\tstart\tend\t" $1 "\tannot"}' > koonin_ogs.tsv
+ln -s species.lookup species.lookup.local
+ln -s species_and_clades.txt species_and_clades.original.txt
+ln -s species.lookup species.lookup.original
+
+export DATABASE_NAME=string_11
+export DATABASE_HOST=localhost
+export DATABASE_PORT=5432
+export DATABASE_USER=helen
+
+export STRING_DATABASE=string_11
+export STRING_DATABASE_HOST=localhost
+export STRING_DATABASE_PORT=5432
+export STRING_DATABASE_USER=helen
+export TABLE_NAME_PROTEIN_SIMILARITIES=homology.similarity_data
+export WORK_DIR=/home/helen/eggNOG-pipeline_5/all
+export DATA_DIR=/home/helen/eggNOG-pipeline_5/DATA
+export APPS_DIR=/home/helen/eggNOG-pipeline_5
+export PERL5LIB=/home/helen/eggNOG-pipeline_5
+
+
+update the clades_of_interest.txt file to include any new levels
+
+work through the rest of do_all_local.sh script, then create each clade with do_clade_local.sh
+
+
+take og3_triangl_tupl_orthgroups.txt from each of the levels in eggNOG/clades-indiv-xml
+for i in `cat ../clades_of_interest.txt|grep -v "#"`; do cp ~/mnt/eggnog/$i/og3_triangl_tupl_orthgroups.txt ./$i.out ; done
+
+convert this format to a better format
+for i in *.txt; do export BN=$(basename $i .txt); cat $i| perl -nale '@c = split "\t"; next if $_ =~ /^#/; @t = split /\./, $c[1]; $tax = $t[0]; print "$ENV{'BN'}\t$c[0]\t$tax\t$c[1]";' > $BN.list.txt; done
+
+
+
+
+
+
+
+
+
+
+== Build STRING database
+
+
+
+=== Experiments
+
+run on atlas in zurich
+derived from maintenance/data_import/experiments/experiments.pl
+
+
+=== Textmining and NLP
+
+refer to go.pl in textmining, which will execute all the textmining and nlp
+
+
+=== Post install
+
+Update the best combined scores table:
+
+insert into network.best_combined_scores_proteins select node_id_a as protein_id, max(combined_score) from network.node_node_links where node_id_a > 10000000 group by node_id_a;
+
+
+
+
+==== Generate download links
+
+in maintenance_10_5 on blue:
+
+download_files/make_annotated_multifasta_file.pl|gzip > $DERIVED_DIR/download_files/protein.sequences.v$STRING_DATABASE_VERSION_DOTTED.fa.gz
+download_files/make_protein_mode_download_summary.pl | gzip > $DERIVED_DIR/download_files/protein.links.detailed.v$STRING_DATABASE_VERSION_DOTTED.txt.gz
+zcat $DERIVED_DIR/download_files/protein.links.detailed.v$STRING_DATABASE_VERSION_DOTTED.txt.gz | cut -d ' ' -f 1,2,10 | gzip > $DERIVED_DIR/download_files/protein.links.v$STRING_DATABASE_VERSION_DOTTED.txt.gz
+cat $DERIVED_DIR/aliases_and_descriptions/alias_all.tsv | download_files/make_protein_alias_download_summary.pl | gzip > $DERIVED_DIR/download_files/protein.aliases.v$STRING_DATABASE_VERSION_DOTTED.txt.gz
+download_files/make_full_detail_protein_links_dump.pl | gzip > $DERIVED_DIR/download_files/protein.links.full.v$STRING_DATABASE_VERSION_DOTTED.txt.gz
+download_files/make_species_info_download_file.pl > $DERIVED_DIR/download_files/species.v$STRING_DATABASE_VERSION_DOTTED.txt
+download_files/make_species_tree_download_file.pl > $DERIVED_DIR/download_files/species.tree.v$STRING_DATABASE_VERSION_DOTTED.txt
+download_files/split_by_species.py $DERIVED_DIR/download_files/protein.links.v$STRING_DATABASE_VERSION_DOTTED.txt.gz
+download_files/split_by_species.py $DERIVED_DIR/download_files/protein.links.detailed.v$STRING_DATABASE_VERSION_DOTTED.txt.gz                                #download_files/split_by_species.py $DERIVED_DIR/download_files/protein.links.full.v$STRING_DATABASE_VERSION_DOTTED.txt.gz                                    #download_files/split_by_species.py $DERIVED_DIR/download_files/protein.actions.v$STRING_DATABASE_VERSION_DOTTED.txt.gz                                       #download_files/split_by_species.py $DERIVED_DIR/download_files/protein.aliases.v$STRING_DATABASE_VERSION_DOTTED.txt.gz
+download_files/make_species_specific_fasta_files.pl $DERIVED_DIR/download_files/protein.sequences.v$STRING_DATABASE_VERSION_DOTTED
+
+
+
+=== Transfer
+
+notes on running transfer for viruses
+
+we are going to transfer
+h1-v1 to h2-v1, h1-v2, h2-v2 where h1,h2 are orthologs and v1,v2 are orthologs
+
+
+sagittarius
+/mnt/mnemo2/damian/STRING_v10_5/virus_transfer/maintenance/transfer/string_v10_5
+
+transfer for cellular organisms is in
+/mnt/mnemo4/damian/STRING_v10_5/STRING_derived_v10_5/transfer
+
+
+
+
+run gocs to project up the tree, and keep track of which virus this is being run for for virus-host transfer
+then run transfer to project down
+
+
+
+
+
+###### Step 1: project upwards
+#run_gocs.py
+
+ 
+# protein names to numbers via protein.shorthands locally in /data/eggNOG/eggNOG-from-site
+for i in *.list; do cat $i | awk '{print $1 "\t" $3 "\t" $3 "." $4}' > $i.stringid; done
+for i in *.stringid; do join -t$'\t' -1 3 -2 1 -o 1.1,1.2,2.2 <(sort -k 2 $i) <(sort -k 1 protein.shorthands.txt) |sort > $i.proteinid; done
+then rename to the correct taxid.og_protid.tsv
+
+# generate levels from above data
+for i in *.og_protid.tsv; do BN=$(basename $i .og_protid.tsv); echo -n $BN; cat $i|awk '{print $2}'|perl -e '@a ; while(<>) {chomp; push @a, $_} $c = join " ", @a;print "\t$c\n";'; done > virus.levels_species.tsv
+
+# generate tree with species -> clades
+for i in 1511857 548681 28883 35237 11632 35268 76804 675063 464095 35278 11157 35301 439488 35325 29258 10239; do cat $i.og_protid.tsv|awk -F"\t" -v parent=$i '{print $2 "\t" parent}'; done | perl -nale 'chomp; ($child, $parent) = split /\t/; if (not defined $pc{$child}) {print $_; $pc{$child} = $parent}' > clades_assignment_nr.tsv
+
+# tree comes from eggnog input data (clades_of_interest.tree)
+cat clades_of_interest.tree clades_assignment_nr.tsv > tree
+
+# species similarities
+# for cellular organisms, calculate the average similarity of the 40 conserved genes
+# for viruses, this is 0
+for i in $(cat *.stringid.proteinid|tab 2|sort|uniq); do for j in $(cat *.stringid.proteinid|tab 2|sort|uniq); do printf "$i\t$j\t0\n"; done ; done|awk '$1 != $2' > species.similarities
+
+# levels similarities (needed for next step)
+for i in *.og_protid.tsv; do BN=$(basename $i .og_protid.tsv); printf "$BN\t0\n"; done > levels_similarities.tsv
+
+# experiments output to correct input format
+# need to order columns virus -- host
+# virus (and v-host) interactions are extracted from the experiments output generated on servers in zurich (and on textmining results generated on computerome) using ~/projects/experiments/extract-virus.pl
+
+
+run dir viruses /mnt/mnemo2/damian/STRING_v10_5/virus_transfer
+                /mnt/mnemo4/damian/STRING_v10_5/STRING_derived_v10_5
+run dir damian  /mnt/mnemo2/damian/string/maintenance/transfer/string/string_v10_5/ (unused)
+
+
+# on computerome: experiments and textmining, with and without hosts
+perl extract-virus.pl --scores=experiments_interact.tsv.gz --viruses=../tm-string-virus-final/viruses.species.tsv --output=experiments_interact.forvirustrans.tsv --mode=experiments --nohost --transferformat --proteinshorthands=protein.shorthands.all
+
+perl extract-virus.pl --scores=experiments_interact.tsv.gz --viruses=../tm-string-virus-final/viruses.species.tsv --output=experiments_interact.forvhtrans.tsv --mode=experiments --transferformat --proteinshorthands=protein.shorthands.all
+
+perl extract-virus.pl --scores=../tm-string-virus-final/string_virus_cooccur_interact.tsv.gz --viruses=../tm-string-virus-final/viruses.species.tsv --output=textmining_interact.forvirustrans.tsv --mode=textmining --nohost --transferformat --proteinshorthands=protein.shorthands.all
+
+perl extract-virus.pl --scores=../tm-string-virus-final/string_virus_cooccur_interact.tsv.gz --viruses=../tm-string-virus-final/viruses.species.tsv --output=textmining_interact.forvhtrans.tsv --mode=textmining --transferformat --proteinshorthands=protein.shorthands.all
+
+#perl extract-virus.pl --scores=../tm-string-virus-final/nlp/Medline_nlp_interact.tsv --viruses=../tm-string-virus-final/viruses.species.tsv --output=actions_interact.forvirustrans.tsv -mode=actions --nohost --transferformat --proteinshorthands=protein.shorthands.all
+maintenance / data_import / combine_files / make_actions_transfer_files.py
+
+
+# run_gocs.py needs to be run multiple times:
+# virus-virus, then virus-host
+# and run separately for each channel
+
+python run_gocs.py 
+# for each virus OG, build scores for host OGs
+# calls generate_orthogroups_combined_scores_array.py
+
+# this generates:
+# report file -- used to calculate transfer evidence on the website (code to do this is in string)
+# gocs out file -- columns are nog, leveltaxid, fromtaxid, interaction_nog, label, score; is used as input to the next step
+
+# output is written into
+# /mnt/mnemo2/damian/STRING_v10_5/virus_transfer/transfer_output
+
+
+
+
+
+###### Step 2: project downwards
+
+# run_transfer.py will be run to project up for each viral OG
+# do not transfer evidence to species that have databases (the transfer has already been done by kegg for example)
+# blocked databases = kegg, reactome, etc
+# use the data that cvm has compiled
+
+python run_transfer.py
+# calls generate_transfer_scores.py
+# run this on gaia
+
+
+# regenerate benchmark from human data for cellular organisms -- see ./COMMANDS-benchmark.R
+
+
+# still on sagittarius ~/virus_transfer
+# filter the transfer output for only valid host/virus pairs and apply benchmarking curves
+for t in actions textmining experimental; do perl filter_transfer_hostvirus.pl transfer_output/$i/; done; done
+for t in actions textmining experimental; do perl filter_transfer_hostvirus.pl transfer_output_vv/$i/; done; done
+
+cat **/*.calib > all.calib
+
+# scp all.calib computerome:projects/transfer
+
+# then combine this with the other scores on computerome in projects/tm-string-virus-final
+perl merge_scores.pl --output=db --nlp=nlp/Medline_nlp_interact.tsv --textmining=textmining_interact.tsv --experiments=../experiments/experiments_interact.tsv --transfer=../transfer/all.calib --shorthands=protein.shorthands.all > db_import_virus_host_network_transfer
+
+# then write the same data into Lars' database
+perl merge_scores.pl --output=lars --nlp=nlp/Medline_nlp_interact.tsv --textmining=textmining_interact.tsv --experiments=../experiments/experiments_interact.tsv --transfer=../transfer/all.calib --shorthands=protein.shorthands.all > lars_db_with_transfer
+
+# can also output format r which is used to generate figures for the viruses STRING manuscript
+
+
+
+
+
+# STRING website install steps
+
+# pull from bitbucket
+hg clone https://helencook@bitbucket.org/vmering/string
+hg pull
+hg update viruses
+
+# generate some files
+for dir in javascript images css; do
+    cd javascript;
+    ./generate_actual_${dir}_files.pl;
+    cd ..;
+done
+
+# get js compressor thing
+cp yuicompressor-2.4.8.jar javascript
+
+# set owner on storable directories
+sudo chown apache:apache data/userparams/ data/userdata
+
+
+# DATABASE
+
+$sudo psql -U postgres
+create database string_10_5;
+grant all on database real_10_5 to helen;
+alter database real_10_5 owner to helen;
+\connect real_10_5
+alter schema items owner to helen;
+alter schema network owner to helen;
+alter schema evidence owner to helen;
+$psql -tc "select 'alter table ' || schemaname || '.' || tablename || ' owner to helen;' from pg_tables where schemaname not in ('pg_catalog', 'information_schema');" real_12_5 | psql -a real_10_5
+
+psql -f <(zcat items_schema.v10.sql.gz) -d string_10_5 && psql -f <(zcat network_schema.v10.sql.gz) -d string_10_5
+
+psql -f <(zcat evidence_schema.v10.sql.gz) -d string_10_5 
+
+# follow directions in doall_local.bash in maintenance on blue
+# following files from derived_10_5
+
+psql -d string_10_5 < populate_items_schema_1.sql
+psql -d string_10_5 < populate_items_schema_2.sql
+
+psql -d string_10_5 < virus_db_import/protein_names/functions.db
+psql -d string_10_5 < synonyms_best_db
+psql -d string_10_5 < db_import_virus_host_network
+
+alter table items.proteins_imagematches rename to protein_image_match; # for some reason this table was renamed
+alter table items.protein_image_match rename to proteins_image_matches; # for some reason this table was renamed twice?
+alter table items.proteins_image_matches rename to proteins_imagematches; # i have no idea what name it should have
+alter table homology.blast_data rename to similarity_data; # or not. wtf folks
+
+create table evidence.evidence_transfers (target_protein_id_a int, target_protein_id_b int, source_protein_id_a int, source_protein_id_b  int, source_ascore int, source_escore int, source_dscore int, source_tscore int);
+
+create index on evidence.items_publications (item_id);
+
+# dumps from damian do above steps instead
+
+# for some reason postgres is treating the string \xxx as a unicode escape character.  so replace '\' with ' ' as a hack
+zcat all.tsv.gz|tab 1 6 |sed 's/\\/ /g' > all.nobackslash # get this from computerome corpus
+create schema fulltextdata;
+create table fulltextdata.corpustext (publication_id text, fulltext text);
+\copy fulltextdata.corpustext from '~/all.nobackslash' 
+
+
+
+# evidence dump didn't include abstracts
+on computerome in ~/projects/tm-virus-string-final/
+./string_abstracts.pl medline # generates medline_abstract.tsv.gz, reads all.tsv.gz corpus
+then 
+create temp table abstracts (pubmedid text, abstract text);
+\copy abstracts from '/home/helen/derived_11_5/medline_abstracts.tsv';
+update evidence.publications set abstract = abstracts.abstract from abstracts where publication_id = abstracts.pubmedid;
+drop table abstracts;
+
+
+# put my evidence into database -- follow section in doall_local.sh
+
+# add species name aliases for virus names that start with Human
+
+\o ~/human_virus_names
+select * from items.species_names where species_id in (select species_id from items.species where kingdom='viruses') and species_name like 'Human%';
+vi ~/human_virus_names to remove Human prefix; copy items.species_names from STDIN;
+psql -d string_10_5 < ~/human_virus_names
+
+# do the same for abbreviations
+psql -d string_10_5 < ~/virus_names
+
+
+# add rows to evidence.publications for publications that are not in the STRING db dump, but which are in the viruses dump
+# get publications already in db
+\o publication_ids
+select publication_id from evidence.publications where publication_id like 'PMID%';
+# get publications that are used for virus interactions
+zcat Medline_complex.tsv.gz|tab 1|sort|uniq > medline_evidence
+join -1 1 -2 1 -t $'\t' medline_evidence <(zcat medline_info.tsv.gz|sort)|tab 1 > medline_info.import.1
+# then find all the missing publications that need to be added
+comm -1 -3 publication_ids_sort <(medline_info.import.1) > add
+# join these ids with the abstracts and info
+join -1 1 -2 1 -t $'\t' add <(zcat ../string_10_5_corpus/all.tsv.gz|sort -T /scratch|tab 1 4 3 2 5) > add.insert
+# some of the years are messed up or missing, so fix these
+cat add.insert | perl -nale 'chomp; @c=split /\t/; $year = 0; if ($c[1]) {$year=int($c[1])}; print "$c[0]\t$year\t$c[2]\t$c[3]\t$c[4]";' > add.insert.date
+# postgres thinks that \nnn is an escaped unicode character and tries to insert the character which may not be valid so it fails
+# fix by just replacing "\" with " "
+cat add.insert.date|sed 's/\\/ /g' > add.insert.date.nobs
+# import the publication data
+\copy evidence.publications (publication_id, publication_date, publication_source, authors, title) from '~/add.insert.date.nobs';
+# and the abstracts
+join -1 1 -2 1 -t $'\t' add <(zcat medline_abstract.tsv.gz|sort) > add.abstracts
+create temp table abstracts (pubmedid text, abstract text);
+\copy abstracts from '/home/helen/add.abstracts';
+update evidence.publications set abstract = abstracts.abstract from abstracts where publication_id = abstracts.pubmedid;
+drop table abstracts;
+
+
+# add full text -- not in db dump from STRING
+
+create index fulltext_pubid on fulltextdata.corpustext (publication_id) ;
+
+
+
+
+# delete viruses that don't have enough connections
+
+
+
+
+
+
+
+
+# POST INSTALL QUERIES
+
+
+
+
+
+# how many interactions for each virus?
+for i in $(cat ../uniprot_to_payload/data_in/string_v11.species.manual.tsv|awk '{print $1}'); do grep $i virus.protein.links.detailed.10.5.txt|wc -l; done > interaction_counts
+paste interaction_counts ../uniprot_to_payload/data_in/string_v11.species.manual.tsv |awk '$1 == 0 {print $2}' > species_no_interactions
+
+update items.species set kingdom='viruses-nl' where species_id in (12288, 12295, 40979, 12317, 213034, 405554, 174142, 12355, 427703, 59504, 311413, 215158, 442493, 57482, 370833, 31770, 10401, 647331, 145579, 12465, 45237, 362693, 157898, 55510, 104664, 10479, 10484, 12538, 10493, 147711, 1032474, 1241371, 92444, 12585, 694581, 47416, 10565, 137556, 12639, 1511779, 59749, 129395, 334205, 1239437, 186769, 186772, 194966, 10651, 10654, 186786, 1511865, 35258, 10685, 145856, 1511873, 10690, 12742, 72149, 35287, 35288, 1511900, 35297, 41459, 305674, 1239565, 696856, 264729, 315953, 29250, 10821, 29255, 365150, 193121, 10857, 490103, 305785, 320122, 55951, 158372, 55987, 129141, 113370, 53988, 1094373, 10986, 82676, 58103, 11002, 35612, 1348384, 11053, 197772, 90961, 338781, 519014, 645993, 244589, 99182, 312185, 686984, 1330070, 46014, 12451, 31713, 31721, 390157, 205877, 205895, 347219, 318558, 95342, 345201, 674953, 197771, 70796, 267407, 300186, 12145, 38062, 543939, 437444, 292052, 687340, 675060, 1297662, 687369, 687379, 687381, 687382, 687383, 687384, 687385, 687386, 324900, 60714, 204086, 591166, 249151, 146762, 11595, 116056, 40281, 298331, 1330524, 31757, 867696, 318844, 96491, 185782, 1285589, 1431460, 1285594, 1285595, 1285598, 1285600, 42475, 204270, 36363, 44562, 484895, 499235, 323118, 12040, 75320, 200255, 40537, 185959, 38525, 42631, 130327, 85652, 28321, 40631, 28347, 128708, 11986, 169683, 28375, 341721, 40666, 1513184, 1513188, 1513193, 693997, 691956, 1513210, 103722, 462590, 235266, 50817, 1513224, 1513235, 12055, 261939, 202566, 270161, 48981, 73561, 32612, 12136, 12138, 12139, 12154, 77698, 12175, 1218488, 1218490, 311228, 311229, 77763, 180170, 77775, 12264, 176106, 12267, 311176); #remove from autocomplete
+
+
+# remove from dropdown
+mv full_virus_list.json full_virus_list.json.unfiltered
+grep -v -f ~/species_with_no_interactions full_virus_list.json.unfiltered > full_virus_list.json
+
+
+# generate figures for distribution of species and types of links
+cat virus.protein.links.detailed.10.5.txt|perl -nale '@c = split /\t/; my ($t1, $p1) = split /\./, $c[0]; my ($t2, $p2) = split /\./, $c[1]; if ($c[8] != 0) {print $t1 . "\t" . $t2 . "\ttxt\t" . $c[8]} if ($c[6] != 0) {print $t1 . "\t" . $t2 . "\texp\t" . $c[6]};' > species_scores
+
+
+
+
+
+# delete hosts that are not connected to a virus
+
+delete from items.species
+delete from items.species_names
+
+select species_id from items.species where species_id in (select node_type_b from network.node_node_links where node_id_a > 10000000) and kingdom != 'viruses';
+
+
+# dump the database
+
+pg_dump --schema=items string_10_5 |gzip > /var/string/download/items_schema.v10.5.sql.gz
+

@@ -1,0 +1,38 @@
+#scp ~/Google Drive/Human-Virus-PPI/data/uniprot_to_payload/data_out/hosts helen@blue
+
+# all hosts
+
+head -1 full_species_list.json >> full_host_list.json
+grep -w -f <(cat ~/hosts|cut -f 2|sort|uniq|awk '{print "\"" $1 "\","}') /var/string/document_root/full_species_list.json |sed '$ s/.$//'>> full_host_list.json
+tail -1 full_species_list.json >> full_host_list.json
+
+# all viruses
+
+rm full_virus_list.json
+head -1 full_species_list.json >> full_virus_list.json
+cat ~/string_v11.species.tsv|sort -k2|awk -F'\t' '{print "[\"" $1 "\", \"" $3 "\"],"}'|sed '$ s/.$//' >> full_virus_list.json
+tail -1 full_species_list.json >> full_virus_list.json
+
+# viruses for specific host
+# full_virus_9606_list.json -> all viruses for this species
+
+for virus in $(cat ~/hosts|cut -f 1|sort|uniq); do 
+    rm full_hosts_$virus.json
+    head -1 full_species_list.json >> full_hosts_$virus.json
+    
+    grep -w -f <(cat ~/hosts|grep -w $virus|cut -f 2|sort|uniq|awk '{print "\"" $1 "\","}') full_host_list.json | sed '$ s/.$//' >> full_hosts_$virus.json
+    tail -1 full_species_list.json >> full_hosts_$virus.json
+done
+
+
+# hosts for specific viruses
+# full_hosts_11320_list.json -> all hosts for this virus
+
+for host in $(cat ~/hosts|cut -f 2|sort|uniq); do
+    rm full_virus_$host.json
+    head -1 full_species_list.json >> full_virus_$host.json
+    grep -w -f <(cat ~/hosts|grep -w $host|cut -f 1|sort|uniq|awk '{print "\"" $1 "\","}') full_virus_list.json | sed '$ s/.$//' >> full_virus_$host.json
+    tail -1 full_species_list.json >> full_virus_$host.json
+done
+    
+

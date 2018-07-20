@@ -267,19 +267,8 @@ for i in *.txt; do export BN=$(basename $i .txt); cat $i| perl -nale '@c = split
 
 
 
-== Build STRING database
 
-
-
-=== Experiments
-
-run on atlas in zurich
-derived from maintenance/data_import/experiments/experiments.pl
-
-
-=== Textmining and NLP
-
-refer to go.pl in textmining, which will execute all the textmining and nlp
+== Build STRING database server set up
 
 
 === Post install
@@ -308,27 +297,42 @@ download_files/make_species_specific_fasta_files.pl $DERIVED_DIR/download_files/
 
 
 
+
+
+
+== Build STRING database evidence
+
+
+Run the scripts for each of the channels, then do transfer
+
+Both experiments and textmining can be run at the same time as that for normal string, but transfer requires additional steps for viruses.
+
+
+=== Experiments
+
+run on atlas in zurich
+derived from maintenance/data_import/experiments/experiments.pl
+
+
+
+=== Textmining and NLP
+
+refer to go.pl in textmining, which will execute all the textmining and nlp
+
+
 === Transfer
 
-notes on running transfer for viruses
+We are going to transfer an interaction between host1-virus1 to all of: host2-virus1, h1-v2, h2-v2 where h1,h2 are orthologs and v1,v2 are orthologs
 
-we are going to transfer
-h1-v1 to h2-v1, h1-v2, h2-v2 where h1,h2 are orthologs and v1,v2 are orthologs
+The code contains subdirectories string_v10_5 and string_v10_5_virus_virus.  The former was used to transfer virus-host, and the second was used to transfer virus-virus (only very minor modifications from the core string code).  Sorry this is sort of a mess and not rolled together into a single code base.  
 
-
-sagittarius
+This was run on sagittarius:
 /mnt/mnemo2/damian/STRING_v10_5/virus_transfer/maintenance/transfer/string_v10_5
 
-transfer for cellular organisms is in
-/mnt/mnemo4/damian/STRING_v10_5/STRING_derived_v10_5/transfer
 
-
-
-
-run gocs to project up the tree, and keep track of which virus this is being run for for virus-host transfer
-then run transfer to project down
-
-
+Overview:
+- run gocs to project up the tree, and keep track of which virus this is being run for for virus-host transfer
+- then run transfer to project down
 
 
 
